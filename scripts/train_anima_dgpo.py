@@ -54,10 +54,11 @@ def parse_args():
     parser.add_argument("--dataset_path", type=str, default="dataset/ocr/train.txt", help="Path to prompt text file")
     parser.add_argument("--model_path", type=str, default="circlestone-labs/Anima-Base-v1.0-Diffusers", help="Model repo or local path")
     parser.add_argument("--output_dir", type=str, default="logs/anima_dgpo_lora", help="Output directory for checkpoints")
+    parser.add_argument("--save_freq", type=int, default=25, help="Frequency of checkpoint saving")
     parser.add_argument("--log_media_freq", type=int, default=50, help="Frequency of W&B media table logging")
     parser.add_argument("--wandb_entity", type=str, default="fixgmc-personal", help="W&B entity")
     parser.add_argument("--wandb_project", type=str, default="dgpo-anima-text-rendering", help="W&B project")
-    parser.add_argument("--wandb_run_name", type=str, default="Anima-DGPO-LoRA-2xA100-bf16-r16", help="W&B run name")
+    parser.add_argument("--wandb_run_name", type=str, default="Anima-DGPO-LoRA-2xA100-bf16-r128", help="W&B run name")
     return parser.parse_args()
 
 
@@ -397,6 +398,14 @@ class AnimaDGPOTrainer:
             print(f"  Reward Mean: {metrics['train/reward_mean']:.4f} | Margin (G+ - G-): {metrics['train/reward_margin']:.4f}")
             print(f"  Step Time: {metrics['perf/step_time_s']:.2f}s | Rollout: {metrics['perf/rollout_time_s']:.2f}s | OCR: {metrics['perf/ocr_eval_time_s']:.2f}s")
             print(f"  VRAM Usage -> GPU0: {metrics['system/gpu0_vram_gb']:.2f} GB | GPU1: {metrics['system/gpu1_vram_gb']:.2f} GB")
+
+            # Periodic checkpoint saving
+            if step % self.args.save_freq == 0:
+                os.makedirs(self.args.output_dir, exist_ok=True)
+                step_ckpt = os.path.join(self.args.output_dir, f"checkpoint-step-{step}")
+                print(f"  💾 Periodic checkpoint saving at step {step} to {step_ckpt}...")
+                self.transformer_train.save_pretrained(step_ckpt)
+                print(f"  ✅ Checkpoint step {step} saved.")
 
         # Save checkpoint
         os.makedirs(self.args.output_dir, exist_ok=True)
