@@ -60,6 +60,7 @@ def parse_args():
     parser.add_argument("--wandb_entity", type=str, default="fixgmc-personal")
     parser.add_argument("--wandb_run_name", type=str, default="Anima-DGPO-LoRA-2xA100-bf16-r128-parallel")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--prompt_file", type=str, default="", help="Path to text prompt file (one prompt per line)")
     parser.add_argument("--smoke_test", action="store_true")
     return parser.parse_args()
 
@@ -304,7 +305,14 @@ class DistributedDGPOTrainer:
         return metrics
 
     def train(self):
-        prompts = DEFAULT_PROMPTS
+        if self.args.prompt_file and os.path.exists(self.args.prompt_file):
+            with open(self.args.prompt_file, "r") as f:
+                prompts = [line.strip() for line in f if line.strip()]
+            if self.rank == 0:
+                print(f"📖 Loaded {len(prompts)} custom prompts from {self.args.prompt_file}")
+        else:
+            prompts = DEFAULT_PROMPTS
+            
         steps = 3 if self.args.smoke_test else self.args.total_steps
         
         for step in range(1, steps + 1):

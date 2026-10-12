@@ -82,26 +82,36 @@ class OcrScorer:
                             rec_texts.extend(item['rec_texts'])
                         elif hasattr(item, 'get') and item.get('rec_texts'):
                             rec_texts.extend(item.get('rec_texts'))
-                    recognized_text = ''.join(rec_texts)
+                    raw_recognized = ' '.join(rec_texts).lower()
                 else:
                     result = self.ocr.ocr(img, cls=False)
-                    recognized_text = ''.join([res[1][0] if res[1][1] > 0 else '' for res in result[0]]) if result[0] else ''
+                    raw_recognized = ' '.join([res[1][0] if res[1][1] > 0 else '' for res in result[0]]).lower() if result[0] else ''
                 
-                recognized_text = recognized_text.replace(' ', '').lower()
+                recognized_clean = raw_recognized.replace(' ', '')
                 prompt_clean = prompt.replace(' ', '').lower()
-                if prompt_clean in recognized_text:
-                    dist = 0
+                
+                # 1. Character-level Levenshtein accuracy
+                if prompt_clean in recognized_clean:
+                    char_dist = 0
                 else:
-                    dist = distance(recognized_text, prompt_clean)
-                # Recognized many unrelated characters, only add one character penalty
-                if dist > len(prompt_clean):
-                    dist = len(prompt_clean)
+                    char_dist = min(distance(recognized_clean, prompt_clean), len(prompt_clean))
+                char_score = 1.0 - (char_dist / max(len(prompt_clean), 1))
+                
+                # 2. Word-level token accuracy (for 4-10 word phrases)
+                prompt_words = [w for w in prompt.lower().split() if w]
+                if prompt_words:
+                    rec_words = raw_recognized.split()
+                    words_found = sum(1 for w in prompt_words if w in rec_words or any(w in r for r in rec_words))
+                    word_score = words_found / len(prompt_words)
+                    reward = 0.5 * char_score + 0.5 * word_score
+                else:
+                    reward = char_score
                 
             except Exception as e:
                 # Error handling (e.g., OCR parsing failure)
                 print(f"OCR processing failed: {str(e)}")
-                dist = len(prompt_clean) if 'prompt_clean' in locals() else len(prompt)
-            reward = 1.0 - (dist / max(len(prompt_clean), 1))
+                reward = 0.0
+                
             rewards.append(float(reward))
 
         return rewards
