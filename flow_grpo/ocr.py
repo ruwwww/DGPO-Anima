@@ -41,6 +41,8 @@ class OcrScorer:
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
                 enable_mkldnn=False,
+                text_det_limit_side_len=512,
+                text_det_limit_type="max",
             )
             self.is_v3 = True
         except Exception:
