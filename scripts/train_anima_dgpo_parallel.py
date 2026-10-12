@@ -333,7 +333,7 @@ class DistributedDGPOTrainer:
     def train(self):
         if self.args.prompt_file and os.path.exists(self.args.prompt_file):
             with open(self.args.prompt_file, "r") as f:
-                prompts = [line.strip() for line in f if line.strip()]
+                prompts = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
             if self.rank == 0:
                 print(f"📖 Loaded {len(prompts)} custom prompts from {self.args.prompt_file}")
         else:

@@ -1,4 +1,3 @@
-# === TIER 1: SHORT PHRASES (3-4 WORDS) ===
 A neon sign on a brick wall glowing in bright pink letters: "Cyberpunk Night City", cinematic lighting, 8k resolution
 A vintage coffee shop wooden chalkboard menu with chalk text: "Fresh Roasted Espresso", cozy atmosphere
 A sleek modern sports car with vinyl decal on the door reading: "Turbo Drift Racing", studio lighting
@@ -14,8 +13,6 @@ A classic cinema marquee shining brightly at dusk: "Grand Premiere Tonight", art
 A bookstore wooden plaque with gold lettering above the door: "The Paper Raven", charming alleyway
 A metallic spacecraft hull stamped with stenciled letters: "Star Voyager One", orbital space
 An urban graffiti mural painted with bold stylish typography: "Rise And Shine", colorful street art
-
-# === TIER 2: MEDIUM PHRASES (5-6 WORDS) ===
 A glowing neon sign on a wet brick wall: "Welcome To The Neon City", rain reflections, cyberpunk aesthetic
 A vintage coffee shop chalkboard menu: "Freshly Roasted Coffee And Warm Pastries", cozy interior lighting
 A retro movie poster with bold vintage typography: "Return Of The Phantom From Space", 1950s sci-fi aesthetic
@@ -36,8 +33,6 @@ A motel neon sign shining in the desert twilight: "Starlight Motel Vacancy Air C
 A pirate tavern parchment wanted poster with ink typography: "Wanted Dead Or Alive Captain Sparrow", dramatic candlelight
 A sports stadium championship banner hanging high: "World Champions Nineteen Ninety Nine", stadium lights
 An apothecary medicine bottle with an intricate vintage label: "Elixir Of Vitality And Endless Health", macro detail
-
-# === TIER 3: EXTENDED SENTENCES (7-9 WORDS) ===
 A vintage postcard with cursive script printed across the image: "Greetings From The Sunny Golden Coast Highway", retro color palette
 A railway station wooden sign hanging above the platform: "Next Train Departing Platform Nine And Three Quarters", foggy morning
 An airport departure display showing sharp digital typography: "Flight Seven Four Seven Boarding Gate Twelve", modern terminal
