@@ -46,12 +46,12 @@ def parse_args():
     parser.add_argument("--model_path", type=str, default="circlestone-labs/Anima-Base-v1.0-Diffusers")
     parser.add_argument("--lora_rank", type=int, default=128)
     parser.add_argument("--lora_alpha", type=int, default=128)
-    parser.add_argument("--global_group_size", type=int, default=4, help="Total samples per prompt across all GPUs")
+    parser.add_argument("--global_group_size", type=int, default=8, help="Total samples per prompt across all GPUs")
     parser.add_argument("--ode_steps", type=int, default=30)
     parser.add_argument("--resolution", type=int, default=512)
-    parser.add_argument("--learning_rate", type=float, default=5e-6)
-    parser.add_argument("--beta_dpo", type=float, default=2500.0)
-    parser.add_argument("--beta_kl", type=float, default=0.01)
+    parser.add_argument("--learning_rate", type=float, default=1.5e-4)
+    parser.add_argument("--beta_dpo", type=float, default=100.0)
+    parser.add_argument("--beta_kl", type=float, default=0.02)
     parser.add_argument("--total_steps", type=int, default=100)
     parser.add_argument("--save_freq", type=int, default=25)
     parser.add_argument("--log_media_freq", type=int, default=50)
@@ -198,7 +198,11 @@ class DistributedDGPOTrainer:
         if std > 1e-4:
             advantages = advantages / (std + 1e-6)
         else:
-            advantages = torch.tensor([1.0, 1.0, -1.0, -1.0], device=self.device, dtype=torch.bfloat16)[:G]
+            default_adv = torch.tensor([1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0], device=self.device, dtype=torch.bfloat16)
+            advantages = default_adv[:G]
+            
+        # Clamping advantages to stabilize RL policy updates (prevents outlier explosion)
+        advantages = torch.clamp(advantages, -2.5, 2.5)
             
         # Group metrics for logging
         indices_sorted = sorted(range(G), key=lambda i: all_rewards[i].item())
@@ -211,7 +215,7 @@ class DistributedDGPOTrainer:
         reward_margin = float(sum(r_pos) / len(r_pos) - sum(r_neg) / len(r_neg))
         
         # -------------------------------------------------------------
-        # Phase 3: Reference & Loss Computation on Local Samples
+        # Phase 3: Multi-Timestep Reference & Loss Computation on Local Samples
         # -------------------------------------------------------------
         t_backward_start = time.time()
         if local_latents.ndim == 4:
@@ -220,56 +224,78 @@ class DistributedDGPOTrainer:
         if local_prompt_embeds.shape[0] != local_G:
             local_prompt_embeds = local_prompt_embeds.repeat(local_G, 1, 1)
             
-        # Synchronize timestep sigma_t across ranks
-        sigma_t = torch.tensor([0.5], device=self.device, dtype=torch.bfloat16)
-        dist.broadcast(sigma_t, src=0)
+        # 1. Group-Shared Noise (per paper): Rank 0 generates shared base noise, broadcasts to Rank 1
+        if self.rank == 0:
+            shared_noise = torch.randn(1, *local_latents.shape[1:], device=self.device, dtype=torch.bfloat16)
+        else:
+            shared_noise = torch.empty(1, *local_latents.shape[1:], device=self.device, dtype=torch.bfloat16)
+        dist.broadcast(shared_noise, src=0)
+        group_noise = shared_noise.repeat(local_G, 1, 1, 1, 1)
         
-        # Flow-Matching trajectory state: xt = (1 - sigma_t) * x0 + sigma_t * noise
-        noise = torch.randn_like(local_latents)
-        xt = (1.0 - sigma_t.item()) * local_latents + sigma_t.item() * noise
-        target_v = noise - local_latents
-        t_tensor = torch.full((local_G,), sigma_t.item() * 1000.0, device=self.device, dtype=torch.bfloat16)
+        # 2. Multi-Timestep Flow Matching: Sample 2 timesteps per rollout
+        # s1: Macro structural layout t in [0.55, 0.85]
+        # s2: Micro raster text sharpness t in [0.15, 0.45]
+        if self.rank == 0:
+            s1 = float(torch.empty(1).uniform_(0.55, 0.85).item())
+            s2 = float(torch.empty(1).uniform_(0.15, 0.45).item())
+            sampled_sigmas = torch.tensor([s1, s2], device=self.device, dtype=torch.float32)
+        else:
+            sampled_sigmas = torch.empty(2, device=self.device, dtype=torch.float32)
+        dist.broadcast(sampled_sigmas, src=0)
+        sigmas_list = [float(sampled_sigmas[0].item()), float(sampled_sigmas[1].item())]
+        
         padding_mask = torch.ones(1, 1, self.args.resolution, self.args.resolution, dtype=torch.bfloat16, device=self.device)
+        local_indices = list(range(self.rank * local_G, (self.rank + 1) * local_G))
+        local_adv = advantages[local_indices]
         
-        # Local Reference prediction v_ref (frozen)
-        with torch.no_grad():
-            v_ref = self.transformer_ref(
+        self.optimizer.zero_grad()
+        loss_dgpo_accum = torch.tensor(0.0, device=self.device, dtype=torch.bfloat16)
+        loss_kl_accum = torch.tensor(0.0, device=self.device, dtype=torch.bfloat16)
+        
+        for sigma in sigmas_list:
+            xt = (1.0 - sigma) * local_latents + sigma * group_noise
+            target_v = group_noise - local_latents
+            t_tensor = torch.full((local_G,), sigma * 1000.0, device=self.device, dtype=torch.bfloat16)
+            
+            # Local Reference prediction v_ref (frozen)
+            with torch.no_grad():
+                v_ref = self.transformer_ref(
+                    hidden_states=xt,
+                    timestep=t_tensor,
+                    encoder_hidden_states=local_prompt_embeds,
+                    padding_mask=padding_mask,
+                ).sample
+                ref_dsm = (target_v - v_ref).square().reshape(local_G, -1).mean(dim=1)
+                
+            # Local Trainable prediction v_theta
+            self.pipe.transformer.train()
+            v_theta = self.pipe.transformer(
                 hidden_states=xt,
                 timestep=t_tensor,
                 encoder_hidden_states=local_prompt_embeds,
                 padding_mask=padding_mask,
             ).sample
             
-        # Local Trainable prediction v_theta
-        self.pipe.transformer.train()
-        v_theta = self.pipe.transformer(
-            hidden_states=xt,
-            timestep=t_tensor,
-            encoder_hidden_states=local_prompt_embeds,
-            padding_mask=padding_mask,
-        ).sample
-        
-        # DSM losses for local samples
-        local_dsm = (target_v - v_theta).square().reshape(local_G, -1).mean(dim=1)
-        with torch.no_grad():
-            local_ref_dsm = (target_v - v_ref).square().reshape(local_G, -1).mean(dim=1)
-            local_delta = local_dsm.detach() - local_ref_dsm
+            local_dsm = (target_v - v_theta).square().reshape(local_G, -1).mean(dim=1)
             
-            # Local advantage slice
-            local_indices = list(range(self.rank * local_G, (self.rank + 1) * local_G))
-            local_adv = advantages[local_indices]
-            per_sample_term = local_adv * (self.args.beta_dpo / G) * local_delta
-            weight = torch.sigmoid(per_sample_term)
+            # Group-level DGPO weighting (AllReduce across ranks)
+            delta_diff = local_dsm.detach() - ref_dsm
+            local_term = (local_adv * delta_diff).sum() * (self.args.beta_dpo / G)
+            global_term = local_term.clone()
+            dist.all_reduce(global_term, op=dist.ReduceOp.SUM)
+            group_weight = torch.sigmoid(global_term)
             
-        # DGPO preference loss scaled so sum over ranks equals global mean over G
-        loss_dgpo = (weight.detach() * local_adv * local_dsm).sum() / G
-        loss_kl = self.args.beta_kl * (v_theta - v_ref).square().mean() / self.world_size
-        total_loss = loss_dgpo + loss_kl
+            # Loss for this timestep
+            step_loss_dgpo = (group_weight.detach() * local_adv * local_dsm).sum() / G
+            step_loss_kl = self.args.beta_kl * (v_theta - v_ref).square().mean() / self.world_size
+            sub_loss = (step_loss_dgpo + step_loss_kl) / len(sigmas_list)
+            
+            sub_loss.backward()
+            
+            loss_dgpo_accum += step_loss_dgpo.detach() / len(sigmas_list)
+            loss_kl_accum += step_loss_kl.detach() / len(sigmas_list)
         
         # Backward & All-Reduce Gradients across NVLink
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        
         for p in self.pipe.transformer.parameters():
             if p.grad is not None:
                 dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
@@ -281,8 +307,8 @@ class DistributedDGPOTrainer:
         step_time = time.time() - step_start
         
         # Reduce loss values for logging
-        loss_dgpo_val = loss_dgpo.detach().clone()
-        loss_kl_val = loss_kl.detach().clone()
+        loss_dgpo_val = loss_dgpo_accum.detach().clone()
+        loss_kl_val = loss_kl_accum.detach().clone()
         dist.all_reduce(loss_dgpo_val, op=dist.ReduceOp.SUM)
         dist.all_reduce(loss_kl_val, op=dist.ReduceOp.SUM)
         

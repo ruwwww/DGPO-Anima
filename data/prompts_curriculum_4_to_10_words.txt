@@ -1,0 +1,65 @@
+# === TIER 1: SHORT PHRASES (3-4 WORDS) ===
+A neon sign on a brick wall glowing in bright pink letters: "Cyberpunk Night City", cinematic lighting, 8k resolution
+A vintage coffee shop wooden chalkboard menu with chalk text: "Fresh Roasted Espresso", cozy atmosphere
+A sleek modern sports car with vinyl decal on the door reading: "Turbo Drift Racing", studio lighting
+An ancient stone tablet engraved with deeply chiseled letters: "Sol Invictus Eternal", archaeological site, dramatic shadows
+A modern high-tech holographic interface display showing crisp text: "System Override Activated", sci-fi laboratory
+A retro 80s arcade machine marquee glowing with pixel typography: "Space Invaders Championship", vaporwave aesthetic
+A golden award certificate on parchment paper with elegant calligraphy: "Excellence In Design", macro detail
+A colorful festival banner hanging across a street with clean typography: "Summer Carnival Celebration", daylight
+A rustic wooden tavern sign hanging from an iron chain with carved letters: "The Golden Dragon", fantasy art
+A minimalist white coffee cup with clean typography printed on the ceramic: "Stay Focused Today", morning sunlight
+A vintage petrol station sign illuminated at twilight: "Route Sixty Six", nostalgic americana
+A classic cinema marquee shining brightly at dusk: "Grand Premiere Tonight", art deco architecture
+A bookstore wooden plaque with gold lettering above the door: "The Paper Raven", charming alleyway
+A metallic spacecraft hull stamped with stenciled letters: "Star Voyager One", orbital space
+An urban graffiti mural painted with bold stylish typography: "Rise And Shine", colorful street art
+
+# === TIER 2: MEDIUM PHRASES (5-6 WORDS) ===
+A glowing neon sign on a wet brick wall: "Welcome To The Neon City", rain reflections, cyberpunk aesthetic
+A vintage coffee shop chalkboard menu: "Freshly Roasted Coffee And Warm Pastries", cozy interior lighting
+A retro movie poster with bold vintage typography: "Return Of The Phantom From Space", 1950s sci-fi aesthetic
+A rustic wooden tavern signboard hanging outdoors: "The Old Dragon Inn And Tavern", fantasy medieval setting
+A sleek modern minimalist storefront with gold letters: "Luxury Fashion Studio And Custom Wear", soft daylight
+An industrial warning sign with bold yellow and black text: "Caution High Voltage Danger Do Not Touch", gritty warehouse
+A highway billboard with clear bold letters against sunset: "Your Adventure Begins Where Roads End", scenic mountain view
+An ancient stone monument engraved with deep Roman letters: "Glory Belongs Only To The Brave", dramatic archaeological lighting
+A colorful festival street banner hanging above a crowd: "Annual Summer Music And Arts Festival", vibrant daylight
+A contemporary art gallery poster on crisp white paper: "Modern Visions Of The Future World", clean typographic layout
+A classic diner marquee sign illuminated in the evening: "Best Homemade Burgers And Thick Shakes", retro americana
+A bookstore window glass with elegant gold leaf lettering: "Rare Books And Vintage Maps Collected", cozy street view
+A boxing gym wall with weathered distressed stencil typography: "Pain Is Temporary But Pride Forever", gritty cinematic lighting
+A vinyl record album cover with psychedelic typography: "Electric Dreams In The Moonlight Galaxy", 1970s retro aesthetic
+A bakery chalkboard displayed on the sidewalk: "Fresh Baked Sourdough Bread Daily", warm morning sunlight
+A modern corporate reception wall with backlit steel letters: "Innovating Today For A Better Tomorrow", clean glass office
+A motel neon sign shining in the desert twilight: "Starlight Motel Vacancy Air Conditioned", nostalgic road trip
+A pirate tavern parchment wanted poster with ink typography: "Wanted Dead Or Alive Captain Sparrow", dramatic candlelight
+A sports stadium championship banner hanging high: "World Champions Nineteen Ninety Nine", stadium lights
+An apothecary medicine bottle with an intricate vintage label: "Elixir Of Vitality And Endless Health", macro detail
+
+# === TIER 3: EXTENDED SENTENCES (7-9 WORDS) ===
+A vintage postcard with cursive script printed across the image: "Greetings From The Sunny Golden Coast Highway", retro color palette
+A railway station wooden sign hanging above the platform: "Next Train Departing Platform Nine And Three Quarters", foggy morning
+An airport departure display showing sharp digital typography: "Flight Seven Four Seven Boarding Gate Twelve", modern terminal
+A garage workshop sign painted on corrugated metal: "Custom Motorcycle Repair And Classic Engine Tuning", industrial setting
+A library reading room sign carved into dark mahogany wood: "Silence Is Golden Please Respect Others Studying", warm library lamps
+A ceramic coffee mug with clean modern printed typography: "Wake Up And Chase Your Wildest Dreams", bright morning window
+A vintage travel poster for an alpine ski resort: "Discover The Enchanted Magic Of Snowy Peaks", retro art deco style
+A boutique perfumery display with embossed gold typography: "Essence Of Summer Jasmine And White Musk", luxurious soft lighting
+A food truck metal side panel with playful hand-lettering: "Crispy Golden Tacos Made With Real Passion", sunny outdoor park
+An artisanal honey jar with a kraft paper printed label: "Pure Wildflower Honey Harvested In Sunny Meadows", rustic farmhouse
+A sci-fi spaceship airlock door with emergency stencil text: "Emergency Manual Release Turn Lever To Open", dark futuristic corridor
+An antique clock face with elegant Roman numerals and typography: "Tempus Fugit Time Flies For No Man", macro brass detail
+A craft brewery beer can label with bold graphic typography: "Double Dry Hopped Citrus Hazy Pale Ale", modern craft beverage
+A music festival entrance archway with illuminated typography: "Soundwaves Festival Three Days Of Pure Magic", energetic night crowd
+A vintage typewriter paper sheet with freshly typed words: "The Story Began On A Dark Stormy Night", close-up depth of field
+A cozy tea shop menu board written in neat calligraphy: "Organic Earl Grey Tea And Lavender Scones", gentle morning light
+A jazz club entrance basement sign with warm glowing neon: "Midnight Jazz Lounge Live Music Every Evening", moody cinematic shadows
+A vintage arcade cabinet marquee with 8-bit pixel lettering: "Super Galaxy Fighter Insert Coins To Play", vibrant 80s arcade
+A vintage botanical poster with detailed plant illustrations: "Medicinal Herbs And Wild Forest Flowers Guide", naturalist illustration
+A motivational poster hanging in a creative studio: "Creativity Takes Courage So Dare To Create", sunlit minimalist studio
+A coffee roastery wooden barrel stenciled with bold typography: "Single Origin Ethiopian Yirgacheffe Beans Fresh Roasted", industrial loft
+A nautical lighthouse brass plaque weathered by sea salt: "Guiding Lost Sailors Through The Stormy Seas", dramatic ocean waves
+A detective agency frosted glass office door with black lettering: "Private Investigations Discretion And Truth Guaranteed Always", film noir
+A chocolate confectionery luxury box embossed with silver script: "Handcrafted Artisan Truffles With Himalayan Sea Salt", dark velvet
+A motorcycle leather jacket back with embroidered gothic lettering: "Born To Ride Wild And Free Forever", cinematic asphalt road
