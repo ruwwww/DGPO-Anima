@@ -26,33 +26,56 @@ import os
 #         return prompts, metadatas
 
 class OcrScorer:
-    def __init__(self, use_gpu: bool = False):
+    def __init__(self, use_gpu: bool = True, device: str = None):
         """
-        OCR reward calculator
-        :param use_gpu: Whether to use GPU acceleration for PaddleOCR
+        OCR reward calculator supporting ultra-fast GPU EasyOCR or PaddleOCR fallback.
+        :param use_gpu: Whether to use GPU acceleration
+        :param device: Target torch device (e.g. 'cuda:0', 'cuda:1', or 'cpu')
         """
-        import os
-        os.environ['FLAGS_use_mkldnn'] = '0'
-        os.environ['PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT'] = '0'
-        try:
-            self.ocr = PaddleOCR(
-                lang="en",
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                enable_mkldnn=False,
-                text_det_limit_side_len=512,
-                text_det_limit_type="max",
-            )
-            self.is_v3 = True
-        except Exception:
-            self.ocr = PaddleOCR(
-                use_angle_cls=False,
-                lang="en",
-                use_gpu=use_gpu,
-                show_log=False
-            )
-            self.is_v3 = False
+        self.use_gpu = use_gpu
+        if device is None:
+            device = "cuda" if (use_gpu and torch.cuda.is_available()) else "cpu"
+        self.device = str(device)
+        self.backend = "paddle_cpu"
+
+        if self.use_gpu and "cuda" in self.device:
+            try:
+                import easyocr
+                self.reader = easyocr.Reader(["en"], gpu=self.device)
+                # Unwrap DataParallel to avoid multi-GPU rank mismatch
+                if isinstance(self.reader.detector, torch.nn.DataParallel):
+                    self.reader.detector = self.reader.detector.module.to(self.device)
+                if isinstance(self.reader.recognizer, torch.nn.DataParallel):
+                    self.reader.recognizer = self.reader.recognizer.module.to(self.device)
+                self.backend = "easyocr_gpu"
+            except Exception as e:
+                print(f"EasyOCR GPU init failed ({e}), falling back to PaddleOCR CPU...")
+
+        if self.backend == "paddle_cpu":
+            import os
+            os.environ['FLAGS_use_mkldnn'] = '0'
+            os.environ['PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT'] = '0'
+            try:
+                from paddleocr import PaddleOCR
+                self.ocr = PaddleOCR(
+                    lang="en",
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                    enable_mkldnn=False,
+                    text_det_limit_side_len=512,
+                    text_det_limit_type="max",
+                )
+                self.is_v3 = True
+            except Exception:
+                from paddleocr import PaddleOCR
+                self.ocr = PaddleOCR(
+                    use_angle_cls=False,
+                    lang="en",
+                    use_gpu=False,
+                    show_log=False
+                )
+                self.is_v3 = False
 
     @torch.no_grad()
     def __call__(self, 
@@ -66,15 +89,17 @@ class OcrScorer:
         """
         prompts = [prompt.split('"')[1] if '"' in prompt else prompt for prompt in prompts]
         rewards = []
-        # Ensure input lengths are consistent
         assert len(images) == len(prompts), "Images and prompts must have the same length"
+        
         for img, prompt in zip(images, prompts):
-            # Convert image format
             if isinstance(img, Image.Image):
                 img = np.array(img)
             
             try:
-                if getattr(self, "is_v3", False):
+                if self.backend == "easyocr_gpu":
+                    res_list = self.reader.readtext(img, detail=0)
+                    raw_recognized = ' '.join(res_list).lower()
+                elif getattr(self, "is_v3", False):
                     res_list = list(self.ocr.predict(img))
                     rec_texts = []
                     for item in res_list:

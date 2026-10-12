@@ -144,8 +144,8 @@ class DistributedDGPOTrainer:
             weight_decay=1e-4,
         )
         
-        # 5. Local OCR Scorer (Parallel across CPU cores per rank)
-        self.ocr_scorer = OcrScorer(use_gpu=False)
+        # 5. Native GPU OCR Scorer per rank (Zero CPU bottleneck)
+        self.ocr_scorer = OcrScorer(use_gpu=True, device=self.device)
         
         dist.barrier()
         if self.rank == 0:
