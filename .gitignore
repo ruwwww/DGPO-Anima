@@ -1,0 +1,7 @@
+
+logs/
+wandb/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+

@@ -31,24 +31,38 @@ class OcrScorer:
         OCR reward calculator
         :param use_gpu: Whether to use GPU acceleration for PaddleOCR
         """
-        self.ocr = PaddleOCR(
-            use_angle_cls=False,
-            lang="en",
-            use_gpu=use_gpu,
-            show_log=False  # Disable unnecessary log output
-        )
+        import os
+        os.environ['FLAGS_use_mkldnn'] = '0'
+        os.environ['PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT'] = '0'
+        try:
+            self.ocr = PaddleOCR(
+                lang="en",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                enable_mkldnn=False,
+            )
+            self.is_v3 = True
+        except Exception:
+            self.ocr = PaddleOCR(
+                use_angle_cls=False,
+                lang="en",
+                use_gpu=use_gpu,
+                show_log=False
+            )
+            self.is_v3 = False
 
     @torch.no_grad()
     def __call__(self, 
                 images: Union[List[Image.Image], List[np.ndarray]], 
-                prompts: List[str]) -> torch.Tensor:
+                prompts: List[str]) -> List[float]:
         """
         Calculate OCR reward
         :param images: List of input images (PIL or numpy format)
         :param prompts: Corresponding target text list
-        :return: Reward tensor (CPU)
+        :return: Reward list
         """
-        prompts = [prompt.split('"')[1] for prompt in prompts]
+        prompts = [prompt.split('"')[1] if '"' in prompt else prompt for prompt in prompts]
         rewards = []
         # Ensure input lengths are consistent
         assert len(images) == len(prompts), "Images and prompts must have the same length"
@@ -58,27 +72,35 @@ class OcrScorer:
                 img = np.array(img)
             
             try:
-                # OCR recognition
-                result = self.ocr.ocr(img, cls=False)
-                # Extract recognized text (handle possible multi-line results)
-                recognized_text = ''.join([res[1][0] if res[1][1] > 0 else '' for res in result[0]]) if result[0] else ''
+                if getattr(self, "is_v3", False):
+                    res_list = list(self.ocr.predict(img))
+                    rec_texts = []
+                    for item in res_list:
+                        if isinstance(item, dict) and 'rec_texts' in item:
+                            rec_texts.extend(item['rec_texts'])
+                        elif hasattr(item, 'get') and item.get('rec_texts'):
+                            rec_texts.extend(item.get('rec_texts'))
+                    recognized_text = ''.join(rec_texts)
+                else:
+                    result = self.ocr.ocr(img, cls=False)
+                    recognized_text = ''.join([res[1][0] if res[1][1] > 0 else '' for res in result[0]]) if result[0] else ''
                 
                 recognized_text = recognized_text.replace(' ', '').lower()
-                prompt = prompt.replace(' ', '').lower()
-                if prompt in recognized_text:
+                prompt_clean = prompt.replace(' ', '').lower()
+                if prompt_clean in recognized_text:
                     dist = 0
                 else:
-                    dist = distance(recognized_text, prompt)
+                    dist = distance(recognized_text, prompt_clean)
                 # Recognized many unrelated characters, only add one character penalty
-                if dist > len(prompt):
-                    dist = len(prompt)
+                if dist > len(prompt_clean):
+                    dist = len(prompt_clean)
                 
             except Exception as e:
                 # Error handling (e.g., OCR parsing failure)
                 print(f"OCR processing failed: {str(e)}")
-                dist = len(prompt)  # Maximum penalty
-            reward = 1-dist/(len(prompt))
-            rewards.append(reward)
+                dist = len(prompt_clean) if 'prompt_clean' in locals() else len(prompt)
+            reward = 1.0 - (dist / max(len(prompt_clean), 1))
+            rewards.append(float(reward))
 
         return rewards
 
