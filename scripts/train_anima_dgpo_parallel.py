@@ -22,11 +22,14 @@ import torch
 import torch.distributed as dist
 from diffusers import AnimaModularPipeline, CosmosTransformer3DModel
 from peft import LoraConfig, get_peft_model
+from transformers import get_cosine_schedule_with_warmup
 import wandb
 
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flow_grpo.ocr import OcrScorer
+from flow_grpo.ema import EMAModuleWrapper
+from flow_grpo.stat_tracking import PerPromptStatTracker
 
 DEFAULT_PROMPTS = [
     'A neon sign on a brick wall glowing in bright pink letters: "Cyberpunk 2077", cinematic lighting, 8k resolution',
@@ -49,11 +52,16 @@ def parse_args():
     parser.add_argument("--global_group_size", type=int, default=8, help="Total samples per prompt across all GPUs")
     parser.add_argument("--ode_steps", type=int, default=30)
     parser.add_argument("--resolution", type=int, default=512)
-    parser.add_argument("--learning_rate", type=float, default=1.5e-4)
+    parser.add_argument("--learning_rate", type=float, default=1.0e-4)
+    parser.add_argument("--warmup_steps", type=int, default=50, help="LR warmup steps")
     parser.add_argument("--beta_dpo", type=float, default=100.0)
-    parser.add_argument("--beta_kl", type=float, default=0.02)
-    parser.add_argument("--total_steps", type=int, default=100)
-    parser.add_argument("--save_freq", type=int, default=25)
+    parser.add_argument("--beta_kl", type=float, default=0.04)
+    parser.add_argument("--clip_range", type=float, default=0.05, help="Trust-region PPO-style DSM clipping range")
+    parser.add_argument("--use_ema_ref", action="store_true", default=True, help="Use dynamic EMA reference policy")
+    parser.add_argument("--ema_decay", type=float, default=0.995, help="EMA reference decay")
+    parser.add_argument("--switch_ema_ref", type=int, default=150, help="Step to activate EMA reference")
+    parser.add_argument("--total_steps", type=int, default=1000)
+    parser.add_argument("--save_freq", type=int, default=100)
     parser.add_argument("--log_media_freq", type=int, default=50)
     parser.add_argument("--output_dir", type=str, default="logs/anima_dgpo_lora_parallel")
     parser.add_argument("--wandb_project", type=str, default="dgpo-anima-text-rendering")
@@ -137,14 +145,30 @@ class DistributedDGPOTrainer:
         for p in self.transformer_ref.parameters():
             p.requires_grad = False
             
-        # 4. Optimizer for LoRA parameters
+        # 4. Optimizer & Cosine Annealing Schedule for LoRA parameters
         self.optimizer = torch.optim.AdamW(
             self.pipe.transformer.parameters(),
             lr=args.learning_rate,
             weight_decay=1e-4,
         )
+        self.scheduler = get_cosine_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=args.warmup_steps,
+            num_training_steps=args.total_steps,
+        )
         
-        # 5. Native GPU OCR Scorer per rank (Zero CPU bottleneck)
+        # 5. Dynamic EMA Reference Policy & Stat Tracking
+        trainable_params = list(filter(lambda p: p.requires_grad, self.pipe.transformer.parameters()))
+        self.ema_ref = EMAModuleWrapper(
+            trainable_params,
+            decay=args.ema_decay,
+            update_step_interval=1,
+            device=self.device,
+        )
+        self.stat_tracker = PerPromptStatTracker(global_std=True)
+        self.best_reward = 0.0
+        
+        # 6. Native GPU OCR Scorer per rank (Zero CPU bottleneck)
         self.ocr_scorer = OcrScorer(use_gpu=True, device=self.device)
         
         dist.barrier()
@@ -191,18 +215,14 @@ class DistributedDGPOTrainer:
         dist.all_gather(all_rewards_list, local_rewards_t)
         all_rewards = torch.cat(all_rewards_list) # shape: (G,)
         
-        # Compute global advantages and group split
-        all_rewards_bf16 = all_rewards.to(dtype=torch.bfloat16)
-        advantages = all_rewards_bf16 - all_rewards_bf16.mean()
-        std = all_rewards_bf16.std()
-        if std > 1e-4:
-            advantages = advantages / (std + 1e-6)
-        else:
-            default_adv = torch.tensor([1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0], device=self.device, dtype=torch.bfloat16)
-            advantages = default_adv[:G]
-            
-        # Clamping advantages to stabilize RL policy updates (prevents outlier explosion)
-        advantages = torch.clamp(advantages, -2.5, 2.5)
+        # Compute global advantages via StatTracker across steps
+        advantages_np = self.stat_tracker.update(
+            [prompt] * G,
+            all_rewards.cpu().numpy(),
+            type='grpo'
+        )
+        advantages = torch.tensor(advantages_np, device=self.device, dtype=torch.bfloat16)
+        advantages = torch.clamp(advantages, -2.0, 2.0)
             
         # Group metrics for logging
         indices_sorted = sorted(range(G), key=lambda i: all_rewards[i].item())
@@ -257,15 +277,28 @@ class DistributedDGPOTrainer:
             target_v = group_noise - local_latents
             t_tensor = torch.full((local_G,), sigma * 1000.0, device=self.device, dtype=torch.bfloat16)
             
-            # Local Reference prediction v_ref (frozen)
-            with torch.no_grad():
-                v_ref = self.transformer_ref(
-                    hidden_states=xt,
-                    timestep=t_tensor,
-                    encoder_hidden_states=local_prompt_embeds,
-                    padding_mask=padding_mask,
-                ).sample
-                ref_dsm = (target_v - v_ref).square().reshape(local_G, -1).mean(dim=1)
+            # Reference prediction (Dynamic EMA reference if step >= switch_ema_ref, else frozen base)
+            use_dynamic_ema = (self.args.use_ema_ref and step >= self.args.switch_ema_ref)
+            if use_dynamic_ema:
+                trainable_params = list(filter(lambda p: p.requires_grad, self.pipe.transformer.parameters()))
+                self.ema_ref.copy_ema_to(trainable_params, store_temp=True)
+                with torch.no_grad():
+                    v_ref = self.pipe.transformer(
+                        hidden_states=xt,
+                        timestep=t_tensor,
+                        encoder_hidden_states=local_prompt_embeds,
+                        padding_mask=padding_mask,
+                    ).sample
+                self.ema_ref.copy_temp_to(trainable_params)
+            else:
+                with torch.no_grad():
+                    v_ref = self.transformer_ref(
+                        hidden_states=xt,
+                        timestep=t_tensor,
+                        encoder_hidden_states=local_prompt_embeds,
+                        padding_mask=padding_mask,
+                    ).sample
+            ref_dsm = (target_v - v_ref).square().reshape(local_G, -1).mean(dim=1)
                 
             # Local Trainable prediction v_theta
             self.pipe.transformer.train()
@@ -278,15 +311,27 @@ class DistributedDGPOTrainer:
             
             local_dsm = (target_v - v_theta).square().reshape(local_G, -1).mean(dim=1)
             
+            # Trust-Region PPO/GRPO Likelihood Ratio Clipping
+            ratio = torch.exp(-local_dsm.detach() + ref_dsm)
+            clip_range = self.args.clip_range
+            should_clip = torch.where(
+                local_adv > 0,
+                ratio > 1.0 + clip_range,
+                ratio < 1.0 - clip_range,
+            )
+            effective_dsm = torch.where(should_clip, local_dsm.detach(), local_dsm)
+            
             # Group-level DGPO weighting (AllReduce across ranks)
             delta_diff = local_dsm.detach() - ref_dsm
             local_term = (local_adv * delta_diff).sum() * (self.args.beta_dpo / G)
             global_term = local_term.clone()
             dist.all_reduce(global_term, op=dist.ReduceOp.SUM)
-            group_weight = torch.sigmoid(global_term)
+            
+            # Self-saturating weight: sigmoid(-global_term) ensures smooth convergence without runaway gradients
+            group_weight = torch.sigmoid(-global_term)
             
             # Loss for this timestep
-            step_loss_dgpo = (group_weight.detach() * local_adv * local_dsm).sum() / G
+            step_loss_dgpo = (group_weight.detach() * local_adv * effective_dsm).sum() / G
             step_loss_kl = self.args.beta_kl * (v_theta - v_ref).square().mean() / self.world_size
             sub_loss = (step_loss_dgpo + step_loss_kl) / len(sigmas_list)
             
@@ -302,6 +347,11 @@ class DistributedDGPOTrainer:
                 
         torch.nn.utils.clip_grad_norm_(self.pipe.transformer.parameters(), max_norm=1.0)
         self.optimizer.step()
+        self.scheduler.step()
+        
+        # Step Dynamic EMA Reference
+        trainable_params = list(filter(lambda p: p.requires_grad, self.pipe.transformer.parameters()))
+        self.ema_ref.step(trainable_params, optimization_step=step)
         
         backward_time = time.time() - t_backward_start
         step_time = time.time() - step_start
@@ -321,6 +371,7 @@ class DistributedDGPOTrainer:
             "loss_kl": loss_kl_val.item(),
             "reward_mean": reward_mean,
             "reward_margin": reward_margin,
+            "lr": self.scheduler.get_last_lr()[0],
             "step_time": step_time,
             "rollout_time": rollout_time,
             "ocr_time": ocr_time,
@@ -357,7 +408,7 @@ class DistributedDGPOTrainer:
             gpu1_vram = all_vram_list[1].item()
             
             if self.rank == 0:
-                print(f"  Loss DGPO: {metrics['loss_dgpo']:.6f} | Loss KL: {metrics['loss_kl']:.6f}")
+                print(f"  Loss DGPO: {metrics['loss_dgpo']:.6f} | Loss KL: {metrics['loss_kl']:.6f} | LR: {metrics['lr']:.2e}")
                 print(f"  Reward Mean: {metrics['reward_mean']:.4f} | Margin (G+ - G-): {metrics['reward_margin']:.4f}")
                 print(f"  Step Time: {metrics['step_time']:.2f}s | Rollout: {metrics['rollout_time']:.2f}s | OCR: {metrics['ocr_time']:.2f}s | Backward: {metrics['backward_time']:.2f}s")
                 print(f"  VRAM Usage -> GPU0: {gpu0_vram:.2f} GB | GPU1: {gpu1_vram:.2f} GB")
@@ -367,6 +418,7 @@ class DistributedDGPOTrainer:
                     "train/loss_kl": metrics["loss_kl"],
                     "train/reward_mean": metrics["reward_mean"],
                     "train/reward_margin": metrics["reward_margin"],
+                    "train/learning_rate": metrics["lr"],
                     "perf/step_time_s": metrics["step_time"],
                     "perf/rollout_time_s": metrics["rollout_time"],
                     "perf/ocr_eval_time_s": metrics["ocr_time"],
@@ -386,6 +438,19 @@ class DistributedDGPOTrainer:
                         wandb.Image(metrics["worst_img"]),
                     )
                     wandb.log({"eval/trajectory_samples": self.media_table}, step=step)
+                    
+                # Auto Best-Checkpoint Keeper
+                if metrics["reward_mean"] > self.best_reward and step >= 25:
+                    self.best_reward = metrics["reward_mean"]
+                    best_ckpt_path = os.path.join(self.args.output_dir, "checkpoint-best-reward")
+                    print(f"🌟 New all-time peak reward ({self.best_reward:.4f})! Saving to {best_ckpt_path}...")
+                    self.pipe.transformer.save_pretrained(best_ckpt_path)
+                    safetensors_file = os.path.join(best_ckpt_path, "adapter_model.safetensors")
+                    if os.path.exists(safetensors_file):
+                        import safetensors.torch as st
+                        tensors = st.load_file(safetensors_file)
+                        bf16_tensors = {k: v.to(torch.bfloat16) for k, v in tensors.items()}
+                        st.save_file(bf16_tensors, safetensors_file)
                     
                 if step % self.args.save_freq == 0 or step == steps:
                     ckpt_path = os.path.join(self.args.output_dir, f"checkpoint-step-{step}")
