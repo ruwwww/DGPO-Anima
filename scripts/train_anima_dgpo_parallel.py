@@ -334,14 +334,18 @@ class DistributedDGPOTrainer:
             
             local_dsm = (target_v - v_theta).square().reshape(local_G, -1).mean(dim=1)
             
-            # Group-level DGPO weighting (AllReduce across ranks)
-            delta_diff = local_dsm.detach() - ref_dsm
-            local_term = (local_adv * delta_diff).sum() * (self.args.beta_dpo / G)
-            global_term = local_term.clone()
-            dist.all_reduce(global_term, op=dist.ReduceOp.SUM)
-            
-            # Self-saturating weight: sigmoid(-global_term) ensures smooth convergence without runaway gradients
-            group_weight = torch.sigmoid(-global_term)
+            # Group-level weighting:
+            # When using positive-only advantage filtering (pos) or RWR, the policy only reinforces winning samples,
+            # so group_weight is strictly 1.0 (preventing sigmoid underflow from zeroing out policy gradients).
+            # For standard symmetric DGPO, use proper sigmoid(global_term) per DGPO formulation.
+            if self.args.adv_type in ["pos", "rwr"]:
+                group_weight = torch.tensor(1.0, device=self.device, dtype=torch.bfloat16)
+            else:
+                delta_diff = local_dsm.detach() - ref_dsm
+                local_term = (local_adv * delta_diff).sum() * (self.args.beta_dpo / G)
+                global_term = local_term.clone()
+                dist.all_reduce(global_term, op=dist.ReduceOp.SUM)
+                group_weight = torch.sigmoid(global_term)
             
             # PPO/GRPO ratio clipping (only when explicitly requested)
             if self.args.clip_dsm:
@@ -356,9 +360,9 @@ class DistributedDGPOTrainer:
             else:
                 effective_dsm = local_dsm
             
-            # Loss for this timestep: full active gradient through local_dsm
-            step_loss_dgpo = (group_weight.detach() * local_adv * effective_dsm).sum() / G
-            step_loss_kl = self.args.beta_kl * (v_theta - v_ref).square().mean() / self.world_size
+            # Loss for this timestep: active policy gradient through effective_dsm
+            step_loss_dgpo = (group_weight.detach() * local_adv * effective_dsm).sum() / local_G
+            step_loss_kl = self.args.beta_kl * (v_theta - v_ref).square().mean()
             sub_loss = (step_loss_dgpo + step_loss_kl) / len(sigmas_list)
             
             sub_loss.backward()
@@ -383,11 +387,13 @@ class DistributedDGPOTrainer:
         backward_time = time.time() - t_backward_start
         step_time = time.time() - step_start
         
-        # Reduce loss values for logging
+        # Reduce loss values for logging (Average across GPUs)
         loss_dgpo_val = loss_dgpo_accum.detach().clone()
         loss_kl_val = loss_kl_accum.detach().clone()
         dist.all_reduce(loss_dgpo_val, op=dist.ReduceOp.SUM)
+        loss_dgpo_val.div_(self.world_size)
         dist.all_reduce(loss_kl_val, op=dist.ReduceOp.SUM)
+        loss_kl_val.div_(self.world_size)
         
         # Gather sample images to Rank 0 for media logging
         best_img = local_images[0]
