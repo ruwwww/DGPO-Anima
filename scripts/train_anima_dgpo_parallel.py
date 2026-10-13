@@ -56,6 +56,8 @@ def parse_args():
     parser.add_argument("--warmup_steps", type=int, default=50, help="LR warmup steps")
     parser.add_argument("--beta_dpo", type=float, default=100.0)
     parser.add_argument("--beta_kl", type=float, default=0.04)
+    parser.add_argument("--init_lora_path", type=str, default="", help="Path to initial LoRA checkpoint to warm-start from")
+    parser.add_argument("--clip_dsm", action="store_true", default=False, help="Enable PPO ratio clipping on DSM loss")
     parser.add_argument("--clip_range", type=float, default=0.05, help="Trust-region PPO-style DSM clipping range")
     parser.add_argument("--use_ema_ref", action="store_true", default=True, help="Use dynamic EMA reference policy")
     parser.add_argument("--ema_decay", type=float, default=0.995, help="EMA reference decay")
@@ -127,6 +129,17 @@ class DistributedDGPOTrainer:
             lora_dropout=0.0,
         )
         self.pipe.transformer = get_peft_model(self.pipe.transformer, lora_config)
+        if getattr(args, "init_lora_path", None) and os.path.exists(args.init_lora_path):
+            if self.rank == 0:
+                print(f"📥 Loading warm-start LoRA weights from {args.init_lora_path}...")
+            from peft import set_peft_model_state_dict
+            import safetensors.torch as st
+            st_file = os.path.join(args.init_lora_path, "adapter_model.safetensors")
+            if os.path.exists(st_file):
+                weights = st.load_file(st_file)
+                set_peft_model_state_dict(self.pipe.transformer, weights)
+                if self.rank == 0:
+                    print("✅ Successfully loaded warm-start LoRA weights!")
         if self.rank == 0:
             self.pipe.transformer.print_trainable_parameters()
             
@@ -311,16 +324,6 @@ class DistributedDGPOTrainer:
             
             local_dsm = (target_v - v_theta).square().reshape(local_G, -1).mean(dim=1)
             
-            # Trust-Region PPO/GRPO Likelihood Ratio Clipping
-            ratio = torch.exp(-local_dsm.detach() + ref_dsm)
-            clip_range = self.args.clip_range
-            should_clip = torch.where(
-                local_adv > 0,
-                ratio > 1.0 + clip_range,
-                ratio < 1.0 - clip_range,
-            )
-            effective_dsm = torch.where(should_clip, local_dsm.detach(), local_dsm)
-            
             # Group-level DGPO weighting (AllReduce across ranks)
             delta_diff = local_dsm.detach() - ref_dsm
             local_term = (local_adv * delta_diff).sum() * (self.args.beta_dpo / G)
@@ -330,7 +333,20 @@ class DistributedDGPOTrainer:
             # Self-saturating weight: sigmoid(-global_term) ensures smooth convergence without runaway gradients
             group_weight = torch.sigmoid(-global_term)
             
-            # Loss for this timestep
+            # PPO/GRPO ratio clipping (only when explicitly requested)
+            if self.args.clip_dsm:
+                ratio = torch.exp(-local_dsm.detach() + ref_dsm)
+                clip_range = self.args.clip_range
+                should_clip = torch.where(
+                    local_adv > 0,
+                    ratio > 1.0 + clip_range,
+                    ratio < 1.0 - clip_range,
+                )
+                effective_dsm = torch.where(should_clip, local_dsm.detach(), local_dsm)
+            else:
+                effective_dsm = local_dsm
+            
+            # Loss for this timestep: full active gradient through local_dsm
             step_loss_dgpo = (group_weight.detach() * local_adv * effective_dsm).sum() / G
             step_loss_kl = self.args.beta_kl * (v_theta - v_ref).square().mean() / self.world_size
             sub_loss = (step_loss_dgpo + step_loss_kl) / len(sigmas_list)
@@ -340,10 +356,11 @@ class DistributedDGPOTrainer:
             loss_dgpo_accum += step_loss_dgpo.detach() / len(sigmas_list)
             loss_kl_accum += step_loss_kl.detach() / len(sigmas_list)
         
-        # Backward & All-Reduce Gradients across NVLink
+        # Backward & All-Reduce Gradients across NVLink (Average across GPUs)
         for p in self.pipe.transformer.parameters():
             if p.grad is not None:
                 dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                p.grad.div_(self.world_size)
                 
         torch.nn.utils.clip_grad_norm_(self.pipe.transformer.parameters(), max_norm=1.0)
         self.optimizer.step()
