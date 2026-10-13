@@ -56,6 +56,7 @@ def parse_args():
     parser.add_argument("--warmup_steps", type=int, default=50, help="LR warmup steps")
     parser.add_argument("--beta_dpo", type=float, default=100.0)
     parser.add_argument("--beta_kl", type=float, default=0.04)
+    parser.add_argument("--adv_type", type=str, default="pos", choices=["pos", "grpo", "rwr"], help="Advantage type: pos (ReLU positive-only GRPO, guaranteed stable), grpo (symmetric), rwr (reward-weighted)")
     parser.add_argument("--init_lora_path", type=str, default="", help="Path to initial LoRA checkpoint to warm-start from")
     parser.add_argument("--clip_dsm", action="store_true", default=False, help="Enable PPO ratio clipping on DSM loss")
     parser.add_argument("--clip_range", type=float, default=0.05, help="Trust-region PPO-style DSM clipping range")
@@ -229,13 +230,22 @@ class DistributedDGPOTrainer:
         all_rewards = torch.cat(all_rewards_list) # shape: (G,)
         
         # Compute global advantages via StatTracker across steps
+        stat_type = 'rwr' if self.args.adv_type == 'rwr' else 'grpo'
         advantages_np = self.stat_tracker.update(
             [prompt] * G,
             all_rewards.cpu().numpy(),
-            type='grpo'
+            type=stat_type
         )
         advantages = torch.tensor(advantages_np, device=self.device, dtype=torch.bfloat16)
-        advantages = torch.clamp(advantages, -2.0, 2.0)
+        if self.args.adv_type == "pos":
+            # Positive-only Advantage Filtering: only reinforce trajectories better than baseline, strictly preventing MSE from exploding to infinity!
+            advantages = torch.clamp(advantages, min=0.0, max=3.0)
+            if (advantages > 0).any():
+                advantages = advantages / (advantages[advantages > 0].mean() + 1e-4)
+        elif self.args.adv_type == "rwr":
+            advantages = torch.clamp(advantages, min=0.0, max=3.0)
+        else:
+            advantages = torch.clamp(advantages, -2.0, 2.0)
             
         # Group metrics for logging
         indices_sorted = sorted(range(G), key=lambda i: all_rewards[i].item())
