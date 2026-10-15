@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--init_lora_path", type=str, default="", help="Path to initial LoRA checkpoint to warm-start from")
     parser.add_argument("--clip_dsm", action="store_true", default=False, help="Enable PPO ratio clipping on DSM loss")
     parser.add_argument("--clip_range", type=float, default=0.05, help="Trust-region PPO-style DSM clipping range")
-    parser.add_argument("--use_ema_ref", action="store_true", default=True, help="Use dynamic EMA reference policy")
+    parser.add_argument("--use_ema_ref", action=argparse.BooleanOptionalAction, default=False, help="Use dynamic EMA reference policy (default: False, anchors to frozen base)")
     parser.add_argument("--ema_decay", type=float, default=0.995, help="EMA reference decay")
     parser.add_argument("--switch_ema_ref", type=int, default=150, help="Step to activate EMA reference")
     parser.add_argument("--total_steps", type=int, default=1000)
@@ -381,8 +381,9 @@ class DistributedDGPOTrainer:
         self.scheduler.step()
         
         # Step Dynamic EMA Reference
-        trainable_params = list(filter(lambda p: p.requires_grad, self.pipe.transformer.parameters()))
-        self.ema_ref.step(trainable_params, optimization_step=step)
+        if self.args.use_ema_ref:
+            trainable_params = list(filter(lambda p: p.requires_grad, self.pipe.transformer.parameters()))
+            self.ema_ref.step(trainable_params, optimization_step=step)
         
         backward_time = time.time() - t_backward_start
         step_time = time.time() - step_start
